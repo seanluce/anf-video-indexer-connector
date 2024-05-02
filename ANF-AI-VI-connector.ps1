@@ -8,14 +8,58 @@
 $Global:baseUri = 'https://api.videoindexer.ai/'
 $Global:accessToken = ''
 $Global:videoIndexerLocation = ''
-$Global:videoIndexerAccountId = ''
+$Global:videoIndexerAccountId = $null
+$Global:videoIndexerAccountName = ''
 
 $Global:prefix = ''
 
 $Global:uploadedVideos = @{}
 
 # Get-VideoIndexerAccounts
-function Select-VideoIndexerAccount {}
+function Select-VideoIndexerAccount {
+    Connect-AzAccount -Identity
+    $azContext = Get-AzContext
+    $subId = $azContext.Subscription.Id
+    $accountResponse = Invoke-AzRestMethod -SubscriptionId $subId -ResourceGroupName "contoso.rg" -ResourceProviderName Microsoft.VideoIndexer -ResourceType "accounts" -ApiVersion 2024-01-01 -Method GET
+    $videoIndexerAccounts = $accountResponse.Content | ConvertFrom-Json
+    if (($videoIndexerAccounts.value).count -gt 0) {
+        write-host ""
+        write-host "Select one of the following Azure Video Indexer accounts:"
+        write-host ""
+        $accountNumber = 1
+        foreach ($videoIndexerAccount in $videoIndexerAccounts.value) {
+            write-host $accountNumber'.' $videoIndexerAccount.name$videoIndexerAccount.properties.accountId '-'$videoIndexerAccount.location
+            $accountNumber++
+        }
+        write-host ""
+        $accountSelected = read-host -Prompt "Select an account"
+        $Global:videoIndexerAccountId = $videoIndexerAccounts.value[$accountSelected - 1].properties.accountId
+        $Global:videoIndexerLocation = $videoIndexerAccounts.value[$accountSelected - 1].location
+        $accountName = $videoIndexerAccounts.value[$accountSelected - 1].name
+        $Global:videoIndexerAccountName = $videoIndexerAccounts.value[$accountSelected - 1].name
+        Get-AzureVideoIndexerToken -subId $subId -accountName $accountName
+    } else {
+        write-host ""
+        write-host -foreground Red "No Azure Video Indexer accounts found. Please create an Azure Video Indexer account using the Azure portal or CLI."
+        write-host ""
+        read-host -Prompt "Press any key to return to the main menu"
+    }
+}
+
+function Get-AzureVideoIndexerToken {
+    param(
+        [string[]]$accountName,
+        [string[]]$subId
+    )
+    $uri = 'https://management.azure.com/subscriptions/' + $subId + '/resourceGroups/contoso.rg/providers/Microsoft.VideoIndexer/accounts/' + $accountName + '/generateAccessToken?api-version=2024-01-01'
+    $payload = @{
+        permissionType = "Contributor"
+        scope = "Account"
+    } | ConvertTo-Json -Depth 3
+    $token = Invoke-AzRestMethod -Uri $uri -Payload $payload -Method POST
+    $tokenObject = $token.Content | ConvertFrom-Json
+    $Global:accessToken = $tokenObject.accessToken
+}
 
 function Enter-SearchPaths {
     param(
@@ -65,20 +109,21 @@ function Search-VideoFiles {
     param(
         [string[]]$searchPaths
     )
-    #$searchPaths = @("C:\Users\b-sluce\Downloads","C:\Users\b-sluce\Videos")
     $videoFilePaths = @()
-
     $searchPaths | ForEach-Object {
         $searchPath = $_
         if (-not (Test-Path $searchPath)) {
             write-host "Path" $searchPath "does not exist."
+            read-host
             return $videoFilePaths
         } elseif ($searchPath.EndsWith('*')) {
             Get-ChildItem -Path $searchPath -Recurse -Include *.mp4, *.mov, *.wmv, *.avi -ErrorAction SilentlyContinue | ForEach-Object {
                 $videoFilePaths += $_
+                write-host $_
+                read-host
             }
         } else {
-            Get-ChildItem -Path $searchPath -Include *.mp4, *.mov, *.wmv, *.avi -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-ChildItem -Path $searchPath -Recurse -Include *.mp4, *.mov, *.wmv, *.avi -ErrorAction SilentlyContinue | ForEach-Object {
                 $videoFilePaths += $_
             }
         }
@@ -113,7 +158,7 @@ function Send-Videos {
         $videoFile = $_
         $encodedFileName = [System.Web.HttpUtility]::UrlEncode($videoFile.Name)
         write-host "Sending" $videoFile.Path "to Azure AI Video Indexer for processing..."
-        $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $videoIndexerAccountId + '/Videos?accessToken=' + $accessToken + '&name=' + $prefix + $encodedFileName + '&privacy=public'
+        $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $Global:videoIndexerAccountId + '/Videos?accessToken=' + $accessToken + '&name=' + $prefix + $encodedFileName + '&privacy=public'
         $body = @{
             "file" = Get-Item -Path $videoFile.Path
         }
@@ -135,7 +180,7 @@ function Get-VideoIndexProgress {
     )
     Test-VideoIndexerToken
     foreach ($videoId in $videoIds.Keys) {
-        $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $videoIndexerAccountId + '/Videos/' + $videoId + '/Index?accessToken=' + $accessToken
+        $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $Global:videoIndexerAccountId + '/Videos/' + $videoId + '/Index?accessToken=' + $accessToken
         $result = Invoke-RestMethod -Uri $uri -Method Get
         if ($result.state -eq "Processing") {
             $progressAsString = ($result.videos[0].processingProgress).Substring(0, ($result.videos[0].processingProgress).Length - 1)
@@ -185,12 +230,14 @@ function Save-VideoIndexJson {
         return
     }
     foreach ($videoId in $readyForDownload) {
-        $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $videoIndexerAccountId + '/Videos/' + $videoId + '/Index?includeSummarizedInsights=' + $includeSummarizedInsights + '&accessToken=' + $accessToken
+        $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $Global:videoIndexerAccountId + '/Videos/' + $videoId + '/Index?includeSummarizedInsights=' + $includeSummarizedInsights + '&accessToken=' + $accessToken
         $result = Invoke-RestMethod -Uri $uri -Method Get
         $fileName = $result.id + '.json'
         $result | ConvertTo-Json -depth 100 | Out-File -FilePath $fileName
     }
 }
+
+
 
 function Show-MainMenu {
     #Clear-Host
@@ -207,7 +254,14 @@ function Show-MainMenu {
         write-host -foreground green "Welcome to the Azure NetApp Files - Azure AI Video Indexer Connector!"
         write-host -foreground darkgray "  created by Sean Luce, Azure NetApp Files PG"
         write-host ""
-        write-host " 1. Select Video Indexer account"
+        if ($Global:videoIndexerAccountId) {
+            write-host "Azure Video Indexer account ID:"$Global:videoIndexerAccountId
+        } else {
+            write-host -NoNewLine "Azure Video Indexer account ID: "
+            write-host -ForegroundColor Red "NONE"
+        }
+        write-host ""
+        write-host " 1. Select Azure Video Indexer account"
         write-host " 2. Add or reset search paths"
         write-host " 3. Search and select video files"
         write-host " 4. Send selected video files to Azure AI Video Indexer"
@@ -218,12 +272,10 @@ function Show-MainMenu {
         write-host " a. Get status by video ID"
         write-host " b. Update Azure Video Indexer token"
         write-host ""
-        
         write-host -foreground blue $selectedVideos.count "videos selected for indexing."
         write-host -foreground yellow $uploadedVideos.count "videos sent for indexing."
         write-host -foreground green $completedVideos.count "videos completed indexing and ready for JSON download."
         write-host ""
-        $searchPaths = @("C:\users\b-sluce\Downloads\*")
         if ($searchPaths.count -eq 0) {
             write-host -foreground red "No search paths defined."
             write-host ""
@@ -237,7 +289,7 @@ function Show-MainMenu {
     
         switch ($selection) {
             1 {
-                Select-VideoIndexerAccount
+                $videoIndexerAccountId = Select-VideoIndexerAccount
             }
             2 {
                 $searchPaths = Enter-SearchPaths -searchPaths $searchPaths
@@ -253,6 +305,7 @@ function Show-MainMenu {
                         foreach($searchPath in $SearchPaths) {
                             write-host ' '$searchPath
                         }
+                        read-host
                         break
                     }     
                 } else {
