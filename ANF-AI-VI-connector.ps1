@@ -9,9 +9,9 @@ $Global:baseUri = 'https://api.videoindexer.ai/'
 $Global:accessToken = ''
 $Global:videoIndexerLocation = ''
 $Global:videoIndexerAccountId = $null
-$Global:videoIndexerAccountName = ''
+$Global:videoIndexerAccountName = $null
 
-$Global:prefix = ''
+$Global:prefix = $null
 
 $Global:uploadedVideos = @{}
 
@@ -24,7 +24,7 @@ function Select-VideoIndexerAccount {
     $videoIndexerAccounts = $accountResponse.Content | ConvertFrom-Json
     if (($videoIndexerAccounts.value).count -gt 0) {
         write-host ""
-        write-host "Select one of the following Azure Video Indexer accounts:"
+        write-host -foregroundcolor green "Select one of the following Azure Video Indexer accounts:"
         write-host ""
         $accountNumber = 1
         foreach ($videoIndexerAccount in $videoIndexerAccounts.value) {
@@ -66,35 +66,82 @@ function Enter-SearchPaths {
         [string[]]$searchPaths
     )
     while ($searchPathSelection -ne 9) {
+        Clear-Host
+        Write-Host ""
+        write-host -foreground blue "     _    _   _ _____    _    ___  __     _____"
+        write-host -foreground green "    / \  | \ | |  ___|  / \  |_ _| \ \   / /_ _|"
+        write-host -foreground cyan "   / _ \ |  \| | |_    / _ \  | |   \ \ / / | |" 
+        write-host -foreground red "  / ___ \| |\  |  _|  / ___ \ | |    \ V /  | |" 
+        write-host -foreground magenta " /_/   \_\_| \_|_|   /_/   \_\___|    \_/  |___|"
         write-host ""
-        Write-host "Examples of search paths:"
+        write-host " 1. Add Azure NetApp Files UNC paths"
+        write-host " 2. Add search path manually"
+        write-host " 3. Clear search paths"
+        write-host " q. Quit and return to main menu"
         write-host ""
-        write-host "C:\Users\Alexandria\Downloads (will NOT include subdirectories)"
-        write-host "Z:\Videos (will NOT include subdirectories)"
-        write-host "Z:\Movies\2024\* (WILL include subdirectories)"
+        write-host -foregroundcolor blue "Current search paths:"
         if ($searchPaths) {
             write-host ""
-            write-host "Current search paths:"
-            write-host ""
             $searchPaths | ForEach-Object {
-                write-host $_
+                write-host -foregroundcolor green $_
             }
+        } else {
+            write-host ""
+            write-host -foregroundcolor red "No search paths defined."
         }
         write-host ""
-        write-host "1. Add search path"
-        write-host "2. Clear search paths"
-        write-host "9. Return to main menu"
-        write-host ""
-        $searchPathSelection = Read-Host -Prompt "Enter selection"
+        $searchPathSelection = read-host -Prompt "Enter selection"
         switch ($searchPathSelection) {
             1 {
-                write-host""
-                $searchPaths += Read-Host -Prompt "Enter search path"
+                $anfUncPaths = @()
+                $netAppVolumes = Get-AzResource | where-object {$_.ResourceType -eq 'Microsoft.NetApp/netAppAccounts/capacityPools/volumes' -and $_.Location -eq 'eastus2'}
+                foreach ($volume in $netappVolumes) {
+                    $volumeDetails = Get-AzNetAppFilesVolume -ResourceId $volume.Id
+                    if ($volumeDetails.protocolTypes -contains 'CIFS') {
+                        $uncPath = '\\' + $volumeDetails.MountTargets.smbserverfqdn + '\' + $volumeDetails.CreationToken
+                        $anfUncPaths += $uncPath
+                    }
+                }
+                if ($anfUncPaths) {
+                    write-host ""
+                    write-host -foregroundcolor green "The following Azure NetApp Files SMB volumes were found:"
+                    write-host ""
+                    $counter = 1
+                    foreach ($anfUncPath in $anfUncPaths) {
+                        write-host "$counter. $anfUncPath"
+                        $counter++
+                    }
+                    write-host ""
+                    do {
+                    write-host -foregroundcolor yellow "Enter 'q' to stop adding Azure NetApp Files search paths."
+                    write-host ""
+                    $uncSelection = read-host -prompt "Which Azure NetApp Files UNC path would you like to add"
+                    if ($uncSelection -eq '' -or $unSelection -eq 'q') {
+                        break
+                    } else {
+                        $searchPaths += $anfUncPaths[$uncSelection - 1]
+                        write-host ""
+                        write-host $anfUncPaths[$uncSelection - 1] 'added to search paths.'
+                        write-host ""
+                    }
+                } until ($uncSelection -eq 'q' -or $uncSelection -eq 'Q' -or $uncSelection -eq '')
+                } else {
+                    write-host -foregroundcolor red "No Azure NetApp Files SMB volumes were found."
+                }
             }
             2 {
+                Write-host -foregroundcolor yellow "Examples of search paths:"
+                write-host ""
+                write-host "     \\anf-1ff1.contoso.com\videos"
+                write-host "     C:\Users\Alexandria\Downloads"
+                write-host "     Z:\Videos\"
+                write-host""
+                $searchPaths += read-host -Prompt "Enter search path"
+            }
+            3 {
                 $searchPaths = @()
             }
-            9 {
+            q {
                 return $searchPaths
             }
             default {
@@ -119,8 +166,6 @@ function Search-VideoFiles {
         } elseif ($searchPath.EndsWith('*')) {
             Get-ChildItem -Path $searchPath -Recurse -Include *.mp4, *.mov, *.wmv, *.avi -ErrorAction SilentlyContinue | ForEach-Object {
                 $videoFilePaths += $_
-                write-host $_
-                read-host
             }
         } else {
             Get-ChildItem -Path $searchPath -Recurse -Include *.mp4, *.mov, *.wmv, *.avi -ErrorAction SilentlyContinue | ForEach-Object {
@@ -171,6 +216,10 @@ function Send-Videos {
         }
         $Global:uploadedVideos.Add($result.id, $newVideoUpload)
     }
+    write-host ""
+    write-host -foregroundcolor green "All videos sent to Azure Video Indexer for processing."
+    write-host ""
+    read-host -prompt "Press any key to return to the main menu"
 }
 
 function Get-VideoIndexProgress {
@@ -215,25 +264,49 @@ function Save-VideoIndexJson {
     Test-VideoIndexerToken
     $readyForDownload = @()
     Get-VideoIndexProgress -videoIds $videoIds -displayResults $false
-    write-host $Global:uploadedVideos
     foreach ($videoId in $Global:uploadedVideos.Keys) {
-        write-host $videoId ' ' $Global:uploadedVideos[$videoId].state
         if ($Global:uploadedVideos[$videoId].state -eq "Processed") {
-            $readyForDownload += $videoId
+            $readyForDownload += $Global:uploadedVideos[$videoId]
         }
     }
+    Clear-Host
+        Write-Host ""
+        write-host -foreground blue "     _    _   _ _____    _    ___  __     _____"
+        write-host -foreground green "    / \  | \ | |  ___|  / \  |_ _| \ \   / /_ _|"
+        write-host -foreground cyan "   / _ \ |  \| | |_    / _ \  | |   \ \ / / | |" 
+        write-host -foreground red "  / ___ \| |\  |  _|  / ___ \ | |    \ V /  | |" 
+        write-host -foreground magenta " /_/   \_\_| \_|_|   /_/   \_\___|    \_/  |___|"
+        write-host ""
     if ($readyForDownload.Count -eq 0) {
         write-host ""
         write-host -foreground red "No video JSON files are ready for download."
         write-host ""
-        read-host -prompt "Press any key to return to the main menu."
+        read-host -foreground green -prompt "Press any key to return to the main menu"
         return
     }
-    foreach ($videoId in $readyForDownload) {
-        $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $Global:videoIndexerAccountId + '/Videos/' + $videoId + '/Index?includeSummarizedInsights=' + $includeSummarizedInsights + '&accessToken=' + $accessToken
-        $result = Invoke-RestMethod -Uri $uri -Method Get
-        $fileName = $result.id + '.json'
-        $result | ConvertTo-Json -depth 100 | Out-File -FilePath $fileName
+    write-host -foreground green "Click the links below to view the results in the Azure Video Indexer portal."
+    write-host ""
+    foreach ($video in $readyForDownload) {
+        $url = 'https://www.videoindexer.ai/accounts/' + $Global:videoIndexerAccountId + '/videos/' + $video.id + '?location=' + $Global:videoIndexerLocation
+        write-host -foregroundcolor blue "Original file:"$video.localPath
+        write-host -foregroundcolor yellow "     Azure Video Indexer link: $url"
+        write-host ""
+    }
+    $saveJson = read-host -prompt "Save JSON data for completed videos Y/n"
+    if ($saveJson -eq 'y' -or $saveJson -eq 'Y') {
+        $savePath = (Get-Location).Path
+        foreach ($video in $readyForDownload) {
+            $uri = $baseUri + $videoIndexerLocation + '/Accounts/' + $Global:videoIndexerAccountId + '/Videos/' + $video.id + '/Index?includeSummarizedInsights=' + $includeSummarizedInsights + '&accessToken=' + $accessToken
+            $result = Invoke-RestMethod -Uri $uri -Method Get
+            $fileName = $result.id + '.json'
+            $result | ConvertTo-Json -depth 100 | Out-File -FilePath $fileName
+            write-host ""
+            write-host -foregroundcolor green "$filename saved to $savePath"
+        }
+        write-host ""
+    read-host -prompt "Downloading complete. Press any key to continue to return to the main menu"
+    } else {
+        return
     }
 }
 
@@ -254,6 +327,27 @@ function Show-MainMenu {
         write-host -foreground green "Welcome to the Azure NetApp Files - Azure AI Video Indexer Connector!"
         write-host -foreground darkgray "  created by Sean Luce, Azure NetApp Files PG"
         write-host ""
+        write-host " 1. Select Azure Video Indexer account"
+        write-host " 2. Add or reset search paths"
+        if ($searchPaths.count -gt 0 -and $videoIndexerAccountName -and $selectedVideos.count -eq 0 -and $uploadedVideos.count -eq 0) {
+            write-host -foregroundcolor yello " 3. Search and select video files"
+        } else {
+            write-host " 3. Search and select video files"
+        }
+        if ($selectedVideos.count -gt 0) {
+            write-host -foreground yellow " 4. Send selected video files to Azure AI Video Indexer"    
+        } else { 
+            write-host " 4. Send selected video files to Azure AI Video Indexer"
+        }
+        if ($prefix) {
+            write-host " 5. Set project identifier ($prefix)"    
+        } else {
+            write-host " 5. Set project identifier"
+        }
+        write-host " 6. Check status of video files"
+        write-host " 7. View completed videos and save video index JSON data"
+        write-host " q. Quit"
+        write-host ""
         if ($Global:videoIndexerAccountId) {
             write-host "Azure Video Indexer account ID:"$Global:videoIndexerAccountId
         } else {
@@ -261,31 +355,30 @@ function Show-MainMenu {
             write-host -ForegroundColor Red "NONE"
         }
         write-host ""
-        write-host " 1. Select Azure Video Indexer account"
-        write-host " 2. Add or reset search paths"
-        write-host " 3. Search and select video files"
-        write-host " 4. Send selected video files to Azure AI Video Indexer"
-        write-host " 5. Check status of video files"
-        write-host " 6. Save video index JSON data"
-        write-host " 9. Exit"
-        write-host ""
-        write-host " a. Get status by video ID"
-        write-host " b. Update Azure Video Indexer token"
-        write-host ""
         write-host -foreground blue $selectedVideos.count "videos selected for indexing."
         write-host -foreground yellow $uploadedVideos.count "videos sent for indexing."
         write-host -foreground green $completedVideos.count "videos completed indexing and ready for JSON download."
         write-host ""
+        if (-not $videoIndexerAccountName) {
+
+            write-host -foreground red "No Azure Video Indexer account selected."
+            write-host ""
+            $defineVideoIndexerNow = read-host -prompt "Would you like to select an Azure Video Indexer account now? Y/n"
+            if ($defineVideoIndexerNow -eq 'y' -or $defineVideoIndexerNow -eq 'Y' -or $defineVideoIndexerNow -eq '') {
+                $videoIndexerAccountId = Select-VideoIndexerAccount
+                Show-MainMenu
+            }
+        }
         if ($searchPaths.count -eq 0) {
             write-host -foreground red "No search paths defined."
             write-host ""
-            $defineSeachPathsNow = read-host -prompt "Would you like to define search paths now? Y/n"
-            if ($defineSeachPathsNow -eq 'y' -or $defineSeachPathsNow -eq 'Y') {
+            $defineSearchPathsNow = read-host -prompt "Would you like to define search paths now? Y/n"
+            if ($defineSearchPathsNow -eq 'y' -or $defineSearchPathsNow -eq 'Y' -or $defineSearchPathsNow -eq '') {
                 $searchPaths = Enter-SearchPaths -searchPaths $searchPaths
                 Show-MainMenu
             }
         }
-        $selection = Read-Host -Prompt "Enter selection"
+        $selection = read-host -Prompt "Enter selection"
     
         switch ($selection) {
             1 {
@@ -298,7 +391,7 @@ function Show-MainMenu {
                 if ($searchPaths) {
                     $foundVideoFiles = Search-VideoFiles -searchPaths $searchPaths
                     if ($foundVideoFiles) {
-                        $selectedVideos = $foundVideoFiles | Select-Object -Property Name, @{Name='Path'; Expression={$_.FullName}}, @{Name='Size (MiB)'; Expression={[math]::round($_.Length/1024/1024)}} | out-gridview -PassThru
+                        $selectedVideos = $foundVideoFiles | Select-Object -Property Name, @{Name='Path'; Expression={$_.FullName}}, @{Name='Size (MiB)'; Expression={[math]::round($_.Length/1024/1024)}} | out-gridview -Title "Select one or more video files to process with Azure Video Indexer" -PassThru
                     } else {
                         write-host ""
                         write-host -foreground red "No video files found in the following search paths:"
@@ -317,13 +410,13 @@ function Show-MainMenu {
             4 {
                 if ($selectedVideos) {
                     write-host ""
-                    write-host -foreground green "The following videos will be sent to Azure AI Video Indexer:"
+                    write-host -foreground green "The following videos will be processed by Azure Video Indexer:"
                     write-host ""
                     foreach ($selectedVideo in $selectedVideos) {
                         write-host ' ' $selectedVideo.Name
                     }
                     write-host ""
-                    $continue = read-host "Continue? Y/n"
+                    $continue = read-host -prompt "Continue? Y/n"
                     if ($continue -eq 'n') {
                         break
                     } elseif ($continue -eq 'y' -or $continue -eq 'Y') {
@@ -338,6 +431,13 @@ function Show-MainMenu {
                 }
             }
             5 {
+                    write-host ""
+                    write-host "The project identifier will act as a prefix to the name of the files sent to Azure Video Indexer."
+                    write-host "This can be useful if you are uploading the same video(s) multiple times as part of a demo or other purpose."
+                    write-host ""
+                    $Global:prefix = read-host -prompt "Enter project identifier"
+            }
+            6 {
                 do {
                     Clear-Host
                     Write-Host ""
@@ -357,8 +457,7 @@ function Show-MainMenu {
                         }
                     }
                     if ($completedVideos.Count -eq $Global:uploadedVideos.Count) {
-                        write-host ""
-                        write-host "Video indexing complete for all videos. Press any key to return to the main menu."
+                        write-host -foregroundcolor green "Video indexing complete for all videos. Press any key to return to the main menu."
                         read-host
                         break
                     }
@@ -377,12 +476,12 @@ function Show-MainMenu {
                     Write-Progress -Activity $videoId -PercentComplete $indexProgress[$videoId] -Status $percentAsString -Id $progressId -Completed $true
                 }
             }
-            6 {
+            7 {
                 #$includeSummarizedInsights = Read-Host -Prompt "Include summarized insights? (true/false)"
                 $includeSummarizedInsights = "false"
                 Save-VideoIndexJson -videoIds $uploadedVideos -includeSummarizedInsights $includeSummarizedInsights
             }
-            9 {
+            q {
                 exit
             }
             a {
