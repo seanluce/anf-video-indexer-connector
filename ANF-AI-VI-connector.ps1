@@ -310,7 +310,173 @@ function Save-VideoIndexJson {
     }
 }
 
+function Find-KeywordVideoIndexer {
+    param(
+        [string[]]$searchTerm
+    )
+    $jsonFiles = Get-ChildItem -Path .\*.json -ErrorAction SilentlyContinue
+    $instanceCount = 0
+    $fileCount = 0
+    $tableOfLabels = @()
+    write-host ""
+    write-host -foregroundcolor green "Searching index JSON files for '$searchTerm'..."
+    write-host ""
+    foreach ($jsonFile in $jsonFiles) {
+        $instancesInThisFile = $null
+        $rawFileContent = Get-Content $jsonFile
+        $objectContent = $rawFileContent | ConvertFrom-Json
+        $videos = $objectContent.videos
+        $accountId = $objectContent.accountId
+        foreach ($video in $videos){
+            $videoId = $video.id
+            $videoLabels = $video.insights.labels | where-object {$_.name -eq $searchTerm}
+            if ($videoLabels.count -gt 0) {
+                $fileCount ++
+            }
+            foreach ($videoLabel in $videoLabels) {# | where-object {$_.name -eq $searchTerm}) {
+                $tableOfLabels += $videoLabel
+                $instancesInThisFile = $videoLabel.instances
+                $totalInstances += $videoLabel.instances
+            }
+        }
+        
+        $fileName = $jsonFile.name
+        $instanceCount = $instancesInThisFile.count
+        $videoName = $objectContent.name
+        if ($instanceCount -eq 0) {
+            #write-host -foregroundcolor red "No instances of '$searchTerm' were found in $fileName ($videoName)."
+            #write-host ""
+        }else {
+            write-host "----------------------------------------------------------------------------------------------------------------------------"
+            write-host -foregroundcolor blue "$fileCount. Found $instanceCount instances of '$searchTerm' in $fileName ($videoName)..."
+            write-host "----------------------------------------------------------------------------------------------------------------------------"
+            foreach ($instance in $instancesInThisFile) {
+                $startTime = ($instance.start).split(":")[2]
+                $url = 'https://www.videoindexer.ai/accounts/' + $accountId + '/videos/' + $videoId + '?location=' + $Global:videoIndexerLocation + '&t=' + $startTime.split(".")[0]
+                $instance | Add-Member -NotePropertyName Url -NotePropertyValue $url -Force
+                write-host ""
+                write-host "  confidence   : "$instance.confidence
+                write-host "  start        : "$instance.start
+                write-host "  end          : "$instance.end
+                write-host "  url          : "$instance.url
+            }
+            write-host ""
+            
+        }
+        
+    }
+    $totalInstanceCount = $totalInstances.count
+    write-host -foregroundcolor green "We found $totalInstanceCount total instance(s) of '$searchTerm'."
+    write-host ""
+    write-host "Ctrl+Click on the URLs above to see each instance of '$searchTerm'"
+    write-host ""
+    $jsonSelection = read-host -prompt "Select a number to view the corresponding JSON data or enter to return to main menu"
+    if ($jsonSelection -eq ''){
+        return
+    }
+    if ($null -ne $tableOfLabels[[int]$jsonSelection -1]) {
+        write-host ""
+        $tableOfLabels[[int]$jsonSelection - 1] | convertto-json | Out-HostColored -SimpleMatch $searchTerm
+        write-host ""
+        read-host "Press any key to return to the search results"
+        clear-host
+        Write-Host ""
+        write-host -foreground blue "     _    _   _ _____    _    ___  __     _____"
+        write-host -foreground green "    / \  | \ | |  ___|  / \  |_ _| \ \   / /_ _|"
+        write-host -foreground cyan "   / _ \ |  \| | |_    / _ \  | |   \ \ / / | |" 
+        write-host -foreground red "  / ___ \| |\  |  _|  / ___ \ | |    \ V /  | |" 
+        write-host -foreground magenta " /_/   \_\_| \_|_|   /_/   \_\___|    \_/  |___|"
+        write-host ""
+        Find-KeywordVideoIndexer -searchTerm $searchTerm
+    } else {
+        write-host ""
+        read-host "Invalid selection. Press any key to return to the search results"
+        clear-host
+        Write-Host ""
+        write-host -foreground blue "     _    _   _ _____    _    ___  __     _____"
+        write-host -foreground green "    / \  | \ | |  ___|  / \  |_ _| \ \   / /_ _|"
+        write-host -foreground cyan "   / _ \ |  \| | |_    / _ \  | |   \ \ / / | |" 
+        write-host -foreground red "  / ___ \| |\  |  _|  / ___ \ | |    \ V /  | |" 
+        write-host -foreground magenta " /_/   \_\_| \_|_|   /_/   \_\___|    \_/  |___|"
+        write-host ""
+        Find-KeywordVideoIndexer -searchTerm $searchTerm
+    }
+}
 
+Function Out-HostColored {
+    # Note: The [CmdletBinding()] and param() block are formatted to be PSv2-compatible.
+    [CmdletBinding()]
+    param(
+      [Parameter(Position = 0, Mandatory = $True)] [string[]] $Pattern,
+      [Parameter(Position = 1)] [ConsoleColor] $ForegroundColor = 'Green',
+      [Parameter(Position = 2)] [ConsoleColor] $BackgroundColor,
+      [switch] $WholeLine,
+      [switch] $SimpleMatch,
+      [Parameter(Mandatory = $True, ValueFromPipeline = $True)] $InputObject
+    )
+  
+    # Wrap the pattern / literal in an explicit capture group.
+    # Fail, if the given regex is syntactically invalid.
+    try {
+      $re = [regex] ('(?<sep>{0})' -f $(if ($SimpleMatch) { 
+            ($Pattern | ForEach-Object { [regex]::Escape($_) }) -join '|'
+          } 
+          else { 
+            ($Pattern | ForEach-Object { '(?:{0})' -f $_ }) -join '|'
+          }))
+    }
+    catch { Throw }
+  
+    # Build a parameters hashtable specifying the colors, to be use via
+    # splatting with Write-Host later.
+    $htColors = @{
+      ForegroundColor = $ForegroundColor
+    }
+    if ($BackgroundColor) {
+      $htColors.Add('BackgroundColor', $BackgroundColor)
+    }
+  
+    # Use pipeline input, if provided (the typical case).
+    if ($MyInvocation.ExpectingInput) { $InputObject = $Input }
+  
+    # Apply default formatting to each input object, and look for matches to
+    # color line by line.
+    $InputObject | Out-String -Stream | ForEach-Object {
+      $line = $_
+      if ($WholeLine) {
+        # Color the whole line in case of match.
+        if ($line -match $re) {
+          Write-Host @htColors $line
+        }
+        else {
+          Write-Host $line
+        }
+      }
+      else {
+        # Split the line by the regex and include what the regex matched.
+        $segments = $line -split $re, 0, 'ExplicitCapture'
+        if ($segments.Count -eq 1) {
+          # no matches -> output line as-is
+          Write-Host $line
+        }
+        else {
+          # at least 1 match, as a repeating sequence of <pre-match> - <match> pairs
+          $i = 0
+          foreach ($segment in $segments) {
+            if ($i++ % 2) {
+              # matching part
+              Write-Host -NoNewline @htColors $segment
+            }
+            else {
+              # non-matching part
+              Write-Host -NoNewline $segment
+            }
+          }
+          Write-Host '' # Terminate the current output line with a newline.
+        }
+      }
+    }
+  }
 
 function Show-MainMenu {
     #Clear-Host
@@ -329,23 +495,25 @@ function Show-MainMenu {
         write-host ""
         write-host " 1. Select Azure Video Indexer account"
         write-host " 2. Add or reset search paths"
-        if ($searchPaths.count -gt 0 -and $videoIndexerAccountName -and $selectedVideos.count -eq 0 -and $uploadedVideos.count -eq 0) {
-            write-host -foregroundcolor yello " 3. Search and select video files"
+        if ($prefix) {
+            write-host " 3. Set project identifier ($prefix)"    
         } else {
-            write-host " 3. Search and select video files"
+            write-host " 3. Set project identifier"
+        }
+        if ($searchPaths.count -gt 0 -and $videoIndexerAccountName -and $selectedVideos.count -eq 0 -and $uploadedVideos.count -eq 0) {
+            write-host -foregroundcolor yello " 4. Search and select video files"
+        } else {
+            write-host " 4. Search and select video files"
         }
         if ($selectedVideos.count -gt 0) {
-            write-host -foreground yellow " 4. Send selected video files to Azure AI Video Indexer"    
+            write-host -foreground yellow " 5. Send selected video files to Azure AI Video Indexer"    
         } else { 
-            write-host " 4. Send selected video files to Azure AI Video Indexer"
+            write-host " 5. Send selected video files to Azure AI Video Indexer"
         }
-        if ($prefix) {
-            write-host " 5. Set project identifier ($prefix)"    
-        } else {
-            write-host " 5. Set project identifier"
-        }
+        
         write-host " 6. Check status of video files"
         write-host " 7. View completed videos and save video index JSON data"
+        write-host " 8. Search indexed videos for keyword"
         write-host " q. Quit"
         write-host ""
         if ($Global:videoIndexerAccountId) {
@@ -388,6 +556,13 @@ function Show-MainMenu {
                 $searchPaths = Enter-SearchPaths -searchPaths $searchPaths
             }
             3 {
+                write-host ""
+                write-host "The project identifier will act as a prefix to the name of the files sent to Azure Video Indexer."
+                write-host "This can be useful if you are uploading the same video(s) multiple times as part of a demo or other purpose."
+                write-host ""
+                $Global:prefix = read-host -prompt "Enter project identifier"
+            }
+            4 {
                 if ($searchPaths) {
                     $foundVideoFiles = Search-VideoFiles -searchPaths $searchPaths
                     if ($foundVideoFiles) {
@@ -407,7 +582,7 @@ function Show-MainMenu {
                     break
                 }
             }
-            4 {
+            5 {
                 if ($selectedVideos) {
                     write-host ""
                     write-host -foreground green "The following videos will be processed by Azure Video Indexer:"
@@ -429,13 +604,6 @@ function Show-MainMenu {
                     write-host -foreground red "No video files have been selected. Nothing to index."
                     break
                 }
-            }
-            5 {
-                    write-host ""
-                    write-host "The project identifier will act as a prefix to the name of the files sent to Azure Video Indexer."
-                    write-host "This can be useful if you are uploading the same video(s) multiple times as part of a demo or other purpose."
-                    write-host ""
-                    $Global:prefix = read-host -prompt "Enter project identifier"
             }
             6 {
                 do {
@@ -480,6 +648,23 @@ function Show-MainMenu {
                 #$includeSummarizedInsights = Read-Host -Prompt "Include summarized insights? (true/false)"
                 $includeSummarizedInsights = "false"
                 Save-VideoIndexJson -videoIds $uploadedVideos -includeSummarizedInsights $includeSummarizedInsights
+            }
+            8 {
+                Clear-Host
+                Write-Host ""
+                write-host -foreground blue "     _    _   _ _____    _    ___  __     _____"
+                write-host -foreground green "    / \  | \ | |  ___|  / \  |_ _| \ \   / /_ _|"
+                write-host -foreground cyan "   / _ \ |  \| | |_    / _ \  | |   \ \ / / | |" 
+                write-host -foreground red "  / ___ \| |\  |  _|  / ___ \ | |    \ V /  | |" 
+                write-host -foreground magenta " /_/   \_\_| \_|_|   /_/   \_\___|    \_/  |___|"
+                write-host ""
+                $searchTerm = read-host -prompt "What are you looking for"
+                if ($searchTerm -eq '') {
+                    Clear-Host
+                    Show-MainMenu 
+                } else {
+                    Find-KeywordVideoIndexer -searchTerm $searchTerm
+                }
             }
             q {
                 exit
